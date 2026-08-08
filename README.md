@@ -15,8 +15,15 @@ exactly the failure they cannot report.
 ## How you get told
 
 There is no alerting code here, and deliberately no credential to send one.
-When the probe fails, GitHub emails the repository owner about the failed
-scheduled run. That is the entire mechanism.
+When the probe fails, GitHub emails you about the failed run. That is the
+entire mechanism.
+
+**The rule is more specific than "the owner", and it matters:** for a
+`schedule`-triggered run GitHub notifies **whoever last edited the cron line**
+in the workflow — not watchers generically — and only if that account has
+Actions email notifications enabled (GitHub profile → Settings →
+Notifications). Whoever next edits the schedule inherits the alerts; check your
+own notification settings when you do.
 
 To prove that path works without waiting for a real outage, run the workflow
 manually with **self_test** enabled: it adds a hostname that cannot resolve,
