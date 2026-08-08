@@ -1,0 +1,122 @@
+name: uptime
+
+# Off-site "is anything answering?" probe for Universal Till's public endpoints.
+#
+# WHY IT LIVES IN A PUBLIC REPO
+#
+# Every other check in this estate runs on the homelab or the NAS — both in the
+# same room, on the same power circuit and the same ISP. A site-level outage
+# takes out the checkers along with the checked, and nobody is told anything.
+# Silence from those checks is not health.
+#
+# This one has to run somewhere else. A public repo gets unlimited free
+# GitHub-hosted minutes, so it costs nothing and never touches the org's
+# private-repo quota (which ran out on 2026-08-08 and halted every private
+# workflow — see ut-docs#447).
+#
+# SECURITY PROPERTIES — these are deliberate, please preserve them
+#
+#   * NO SECRETS. Not one. There is nothing here to steal, and no credential
+#     that a repo-write compromise could exfiltrate. Alerting is GitHub's own
+#     "scheduled workflow failed" email to the repo owner, which needs no token.
+#   * permissions: {} — the GITHUB_TOKEN is granted nothing at all. This job
+#     reads no code and writes no issue, so it needs no access.
+#   * NO pull_request trigger. Combined with the above there is no path by
+#     which a fork's PR can run anything here.
+#   * runs-on: ubuntu-latest, NEVER a self-hosted runner. A self-hosted runner
+#     reachable from a public repo lets any fork's pull request execute
+#     arbitrary code inside the homelab. This is the single most dangerous
+#     mistake available in this estate, and the YAML for it looks identical to
+#     the safe version.
+#   * No checkout. The probe is inline, so the job never fetches repo contents.
+#   * Only PUBLIC hostnames are named, and they are already public in DNS and
+#     in Certificate Transparency logs — this file discloses nothing new.
+#     Internal addresses, node names and paths stay in the private repos where
+#     they belong, and an off-site probe could not use them anyway.
+#     sql.universaltill.com is deliberately NOT probed: it is already in DNS,
+#     but there is no reason to publish a file drawing attention to an
+#     internet-exposed database port.
+#
+# WHAT IT DOES NOT DO
+#
+# This is a liveness probe, not a health check. It answers "is the site dark?"
+# — not "is the catalog empty?" or "is the database serving?". Those are the
+# LAN-side checkers' job (homelab-k8s: nas/monitor + apps/nas-monitor), because
+# they need internal access and richer state. Keeping the split means this file
+# never has to know anything private.
+
+on:
+  schedule:
+    # Every 15 minutes. GitHub delays scheduled runs under load and does not
+    # guarantee the exact minute, which is fine: this catches outages measured
+    # in minutes-to-hours, not seconds.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      self_test:
+        description: "Probe a deliberately broken URL to prove the failure email still arrives"
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Probe public endpoints
+        env:
+          SELF_TEST: ${{ inputs.self_test }}
+        run: |
+          set -uo pipefail
+
+          # host|accepted status codes
+          TARGETS="
+          https://universaltill.com/|200,301,302
+          https://cloud.universaltill.com/healthz|200
+          https://cloud.universaltill.com/ui/|200
+          https://id.universaltill.com/|200,302
+          "
+
+          # The alerting path is GitHub's own failure email, and an alert path
+          # nobody has ever seen fire is an alert path nobody knows is broken.
+          # This makes it provable on demand without waiting for a real outage.
+          if [ "${SELF_TEST:-false}" = "true" ]; then
+            TARGETS="${TARGETS}
+          https://this-host-does-not-exist.universaltill.com/|200
+          "
+          fi
+
+          failed=0
+          for line in $TARGETS; do
+            [ -z "$line" ] && continue
+            url="${line%%|*}"
+            want="${line##*|}"
+
+            # Retry once before declaring failure: a single dropped packet on
+            # the public internet is not an outage, and a probe that cries wolf
+            # gets muted, which is the same as not having one.
+            for attempt in 1 2; do
+              code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 "$url" 2>/dev/null)
+              case ",${want}," in
+                *",${code},"*) echo "ok    $url -> $code"; break ;;
+              esac
+              if [ "$attempt" = 2 ]; then
+                echo "FAIL  $url -> ${code:-no-response} (expected one of ${want})"
+                failed=1
+              else
+                sleep 10
+              fi
+            done
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo ""
+            echo "One or more public endpoints did not answer from outside the network."
+            echo "This probe runs off-site, so it cannot tell you WHY — check the"
+            echo "homelab-side checks, the router, and the ISP in that order."
+            exit 1
+          fi
+          echo ""
+          echo "All public endpoints answered."
