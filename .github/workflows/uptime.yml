@@ -72,10 +72,16 @@ jobs:
           set -uo pipefail
 
           # host|accepted status codes
+          #
+          # Every locale-aware surface 301s from its unlocalized path to a
+          # locale path (e.g. /ui/ -> /ui/en-gb/) by design — see the
+          # "locale in the URL, everywhere" rule. Bare 200 here is wrong for
+          # any such surface and will false-fail on every run; accept
+          # 301/302 wherever the target does this, same as the site root.
           TARGETS="
           https://universaltill.com/|200,301,302
           https://cloud.universaltill.com/healthz|200
-          https://cloud.universaltill.com/ui/|200
+          https://cloud.universaltill.com/ui/|200,301,302
           https://id.universaltill.com/|200,302
           "
 
